@@ -1,242 +1,271 @@
-// main/main.c —— FoloToy AI Passport BSP 驱动参考示例:初始化 + 菜单 + 按键分发。
-//
-// 按键语义(全局统一):
-//   上/下 短按   菜单中=移动选中项;演示页中=该页自定义
-//   确定  短按   菜单中=进入选中项;演示页中=该页自定义
-//   确定  长按   演示页中=返回菜单(由本文件统一拦截)
-#include "bsp_i2c.h"
-#include "bsp_display.h"
-#include "bsp_button.h"
-#include "bsp_audio.h"
+#include <stdio.h>
+#include <string.h>
 #include "bsp_battery.h"
-#include "bsp_pins.h"      // 错误日志里要打印 BSP_LCD_* 引脚号
-#include "demo.h"
-#include "demo_navigation.h"
-#include "ui_pixel.h"
+#include "bsp_button.h"
+#include "bsp_display.h"
+#include "bsp_i2c.h"
 #include "lvgl.h"
+#include "monitor_net.h"
 #include "esp_log.h"
-#include "esp_sleep.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
-static const char *TAG = "main";
+LV_FONT_DECLARE(monitor_font_16);
 
-static const demo_entry_t DEMOS[] = {
-    { .name = "Display", .enter = demo_display_enter, .exit = demo_display_exit,
-      .key = demo_display_key },
-    { .name = "Button", .enter = demo_button_enter, .exit = demo_button_exit,
-      .key = demo_button_key },
-    { .name = "Audio", .enter = demo_audio_enter, .exit = demo_audio_exit,
-      .key = demo_audio_key, .start = demo_audio_start, .stop = demo_audio_stop },
-    { .name = "Battery", .enter = demo_battery_enter, .exit = demo_battery_exit,
-      .key = demo_battery_key },
-    { .name = "Wi-Fi", .enter = demo_wifi_enter, .exit = demo_wifi_exit,
-      .key = demo_wifi_key, .start = demo_wifi_start, .stop = demo_wifi_stop },
-    { .name = "BLE", .enter = demo_ble_enter, .exit = demo_ble_exit,
-      .key = demo_ble_key, .start = demo_ble_start, .stop = demo_ble_stop },
-    { .name = "Low Power", .enter = demo_low_power_enter, .exit = demo_low_power_exit,
-      .key = demo_low_power_key, .start = demo_low_power_start, .stop = demo_low_power_stop },
-};
-#define DEMO_COUNT (sizeof(DEMOS) / sizeof(DEMOS[0]))
-#define INPUT_QUEUE_DEPTH 8
+static const char *TAG = "codex_monitor";
+static const uint32_t BG = 0x0C1220;
+static const uint32_t CARD = 0x17243A;
+static const uint32_t INK = 0xEDF6FA;
+static const uint32_t MUTED = 0x9AAFC0;
+static const uint32_t TEAL = 0x28D7B4;
 
 typedef struct {
-    bsp_btn_t btn;
+    bsp_btn_t button;
     bsp_btn_ev_t event;
-} input_event_t;
+} input_t;
 
-// 各外设初始化结果:失败的项在菜单里标 [FAIL] 且不允许进入。
-static bool s_ok[DEMO_COUNT];
+static QueueHandle_t s_inputs;
+static lv_obj_t *s_screen;
+static lv_obj_t *s_overview;
+static lv_obj_t *s_details;
+static lv_obj_t *s_status_label;
+static lv_obj_t *s_battery_label;
+static lv_obj_t *s_updated_label;
+static lv_obj_t *s_five_percent;
+static lv_obj_t *s_week_percent;
+static lv_obj_t *s_five_reset;
+static lv_obj_t *s_week_reset;
+static lv_obj_t *s_five_bar;
+static lv_obj_t *s_week_bar;
+static lv_obj_t *s_detail_status;
+static lv_obj_t *s_detail_update;
+static monitor_status_t s_status = MONITOR_NEEDS_SETUP;
+static monitor_snapshot_t s_snapshot;
+static bool s_has_snapshot;
+static bool s_show_details;
+static int s_battery = -1;
 
-static lv_obj_t *s_menu_scr;
-static lv_obj_t *s_cards[DEMO_COUNT];
-static lv_obj_t *s_rows[DEMO_COUNT];
-static lv_obj_t *s_mascot;
-static demo_navigation_t s_navigation;
-static QueueHandle_t s_input_queue;
-static TaskHandle_t s_input_task;
-static volatile bool s_input_ready;
+static lv_obj_t *label(lv_obj_t *parent, const char *text, int x, int y,
+                       const lv_font_t *font, uint32_t color)
+{
+    lv_obj_t *object = lv_label_create(parent);
+    lv_label_set_text(object, text);
+    lv_obj_set_pos(object, x, y);
+    lv_obj_set_style_text_font(object, font, 0);
+    lv_obj_set_style_text_color(object, lv_color_hex(color), 0);
+    return object;
+}
 
-static void menu_refresh(void) {
-    for (size_t i = 0; i < DEMO_COUNT; i++) {
-        lv_label_set_text_fmt(s_rows[i], "%s%s",
-                              DEMOS[i].name,
-                              s_ok[i] ? "" : "  [FAIL]");
-        ui_pixel_set_selected(s_cards[i], i == s_navigation.selected, s_ok[i]);
-        lv_obj_set_style_text_color(s_rows[i],
-            s_ok[i] ? lv_color_hex(UI_INK) : lv_color_hex(0x7A2020), 0);
+static lv_obj_t *panel(lv_obj_t *parent, int y)
+{
+    lv_obj_t *object = lv_obj_create(parent);
+    lv_obj_set_pos(object, 12, y);
+    lv_obj_set_size(object, 216, 89);
+    lv_obj_set_style_bg_color(object, lv_color_hex(CARD), 0);
+    lv_obj_set_style_border_width(object, 0, 0);
+    lv_obj_set_style_radius(object, 14, 0);
+    lv_obj_set_style_pad_all(object, 0, 0);
+    lv_obj_remove_flag(object, LV_OBJ_FLAG_SCROLLABLE);
+    return object;
+}
+
+static lv_obj_t *quota_bar(lv_obj_t *parent)
+{
+    lv_obj_t *bar = lv_bar_create(parent);
+    lv_obj_set_pos(bar, 13, 60);
+    lv_obj_set_size(bar, 190, 8);
+    lv_bar_set_range(bar, 0, 100);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(0x324359), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(TEAL), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(bar, 5, LV_PART_MAIN);
+    lv_obj_set_style_radius(bar, 5, LV_PART_INDICATOR);
+    return bar;
+}
+
+static const char *status_text(monitor_status_t status)
+{
+    switch (status) {
+    case MONITOR_NEEDS_SETUP: return "未配置";
+    case MONITOR_CONNECTING: return "连接中";
+    case MONITOR_FETCHING: return "更新中";
+    case MONITOR_LIVE: return "在线";
+    case MONITOR_OFFLINE: return "离线";
+    default: return "读取失败";
     }
 }
 
-static void menu_build(void) {
-    s_menu_scr = ui_pixel_screen_create("FoloToy");
-
-    for (size_t i = 0; i < DEMO_COUNT; i++) {
-        int x = 11 + (int)(i % 2) * 112;
-        int y = 52 + (int)(i / 2) * 47;
-        s_cards[i] = ui_pixel_panel_create(s_menu_scr, x, y, 102, 40, UI_PAPER);
-        s_rows[i] = lv_label_create(s_cards[i]);
-        lv_obj_set_style_text_font(s_rows[i], &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_align(s_rows[i], LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_center(s_rows[i]);
+static void refresh_ui(void)
+{
+    lv_label_set_text(s_status_label, status_text(s_status));
+    lv_label_set_text(s_detail_status, status_text(s_status));
+    lv_obj_set_style_text_color(s_status_label,
+        lv_color_hex(s_status == MONITOR_LIVE ? TEAL : MUTED), 0);
+    if (s_battery < 0) lv_label_set_text(s_battery_label, "BAT --");
+    else lv_label_set_text_fmt(s_battery_label, "BAT %d%%", s_battery);
+    if (s_has_snapshot) {
+        const monitor_window_t *five = &s_snapshot.five_hour;
+        const monitor_window_t *week = &s_snapshot.weekly;
+        lv_label_set_text_fmt(s_five_percent, five->available ? "%d%%" : "--",
+                              five->used_percent);
+        lv_label_set_text_fmt(s_week_percent, week->available ? "%d%%" : "--",
+                              week->used_percent);
+        lv_label_set_text_fmt(s_five_reset, "重置 %s",
+                              five->available ? five->reset_local : "--");
+        lv_label_set_text_fmt(s_week_reset, "重置 %s",
+                              week->available ? week->reset_local : "--");
+        lv_bar_set_value(s_five_bar, five->available ? five->used_percent : 0, LV_ANIM_OFF);
+        lv_bar_set_value(s_week_bar, week->available ? week->used_percent : 0, LV_ANIM_OFF);
+        lv_label_set_text_fmt(s_updated_label, "更新 %s", s_snapshot.updated_local);
+        lv_label_set_text_fmt(s_detail_update, "更新 %s", s_snapshot.updated_local);
+    } else {
+        lv_label_set_text(s_five_percent, "--");
+        lv_label_set_text(s_week_percent, "--");
+        lv_label_set_text(s_five_reset, "重置 --");
+        lv_label_set_text(s_week_reset, "重置 --");
+        lv_label_set_text(s_updated_label, "更新 --");
+        lv_label_set_text(s_detail_update, "更新 --");
     }
-
-    s_mascot = ui_pixel_mascot_create(s_menu_scr, 101, 242);
-
-    menu_refresh();
-    lv_screen_load(s_menu_scr);
 }
 
-static void enter_menu(void) {
-    menu_build();
+static void show_page(void)
+{
+    if (s_show_details) {
+        lv_obj_add_flag(s_overview, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(s_details, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_details, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(s_overview, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
-static demo_nav_input_t navigation_input(bsp_btn_t btn, bsp_btn_ev_t event) {
-    if (event == BSP_BTN_LONG && btn == BSP_BTN_OK) return DEMO_NAV_INPUT_OK_LONG;
-    if (event != BSP_BTN_CLICK) return DEMO_NAV_INPUT_OTHER;
-    if (btn == BSP_BTN_UP) return DEMO_NAV_INPUT_UP_CLICK;
-    if (btn == BSP_BTN_DOWN) return DEMO_NAV_INPUT_DOWN_CLICK;
-    if (btn == BSP_BTN_OK) return DEMO_NAV_INPUT_OK_CLICK;
-    return DEMO_NAV_INPUT_OTHER;
+static void build_ui(void)
+{
+    s_screen = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_screen, lv_color_hex(BG), 0);
+    lv_obj_set_style_border_width(s_screen, 0, 0);
+    lv_obj_remove_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);
+    label(s_screen, "CODEX", 15, 12, &lv_font_montserrat_20, INK);
+    label(s_screen, "用量监控", 16, 41, &monitor_font_16, MUTED);
+    s_battery_label = label(s_screen, "BAT --", 161, 17, &lv_font_montserrat_14, MUTED);
+    s_status_label = label(s_screen, "未配置", 164, 43,
+                           &monitor_font_16, MUTED);
+
+    s_overview = lv_obj_create(s_screen);
+    lv_obj_set_pos(s_overview, 0, 70);
+    lv_obj_set_size(s_overview, 240, 250);
+    lv_obj_set_style_bg_opa(s_overview, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_overview, 0, 0);
+    lv_obj_set_style_pad_all(s_overview, 0, 0);
+    lv_obj_remove_flag(s_overview, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *five = panel(s_overview, 0);
+    label(five, "五小时", 13, 9, &monitor_font_16, MUTED);
+    s_five_percent = label(five, "--", 130, 5, &lv_font_montserrat_20, INK);
+    s_five_bar = quota_bar(five);
+    s_five_reset = label(five, "重置 --", 13, 71,
+                         &monitor_font_16, MUTED);
+
+    lv_obj_t *week = panel(s_overview, 98);
+    label(week, "每周", 13, 9, &monitor_font_16, MUTED);
+    s_week_percent = label(week, "--", 130, 5, &lv_font_montserrat_20, INK);
+    s_week_bar = quota_bar(week);
+    s_week_reset = label(week, "重置 --", 13, 71,
+                         &monitor_font_16, MUTED);
+    s_updated_label = label(s_overview, "更新 --", 17, 196,
+                            &monitor_font_16, MUTED);
+    label(s_overview, "确定刷新", 137, 196,
+          &monitor_font_16, MUTED);
+
+    s_details = lv_obj_create(s_screen);
+    lv_obj_set_pos(s_details, 0, 70);
+    lv_obj_set_size(s_details, 240, 250);
+    lv_obj_set_style_bg_opa(s_details, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_details, 0, 0);
+    lv_obj_set_style_pad_all(s_details, 0, 0);
+    lv_obj_remove_flag(s_details, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *info = panel(s_details, 0);
+    lv_obj_set_height(info, 174);
+    label(info, "连接状态", 14, 14, &monitor_font_16, MUTED);
+    s_detail_status = label(info, "未配置", 14, 42,
+                            &monitor_font_16, TEAL);
+    s_detail_update = label(info, "更新 --", 14, 76,
+                            &monitor_font_16, INK);
+    label(info, "电脑与设备同一网络", 14, 107,
+          &monitor_font_16, MUTED);
+    label(info, "首次请用 USB 配置", 14, 137,
+          &monitor_font_16, MUTED);
+    label(s_details, "上/下切换  确定刷新", 16, 196,
+          &monitor_font_16, MUTED);
+    show_page();
+    refresh_ui();
+    lv_screen_load(s_screen);
 }
 
-static void process_input(const input_event_t *input) {
-    demo_nav_input_t nav_input = navigation_input(input->btn, input->event);
-
-    if (s_navigation.active >= 0) {
-        demo_nav_result_t result = demo_navigation_handle(&s_navigation, nav_input, true);
-        const demo_entry_t *demo = &DEMOS[result.index];
-        if (result.action == DEMO_NAV_ACTION_EXIT) {
-            esp_err_t e = demo->stop ? demo->stop() : ESP_OK;
-            if (e != ESP_OK) {
-                ESP_LOGE(TAG, "%s 页面停止失败: %s", demo->name, esp_err_to_name(e));
-                return;
-            }
-            if (!bsp_lvgl_lock(500)) return;
-            demo->exit();
-            demo_navigation_complete_exit(&s_navigation);
-            enter_menu();
-            bsp_lvgl_unlock();
-        } else if (result.action == DEMO_NAV_ACTION_FORWARD) {
-            demo->key(input->btn, input->event);
-        }
-        return;
+static void on_monitor_update(monitor_status_t status, const monitor_snapshot_t *snapshot)
+{
+    if (!bsp_lvgl_lock(1000)) return;
+    s_status = status;
+    if (snapshot) {
+        s_snapshot = *snapshot;
+        s_has_snapshot = true;
     }
-
-    if (nav_input == DEMO_NAV_INPUT_OTHER || nav_input == DEMO_NAV_INPUT_OK_LONG) return;
-    if (!bsp_lvgl_lock(500)) return;
-    demo_nav_result_t result = demo_navigation_handle(
-        &s_navigation, nav_input, s_ok[s_navigation.selected]);
-    if (result.action == DEMO_NAV_ACTION_REFRESH) {
-        menu_refresh();
-        ui_pixel_mascot_jump(s_mascot);
-    } else if (result.action == DEMO_NAV_ACTION_ENTER) {
-        const demo_entry_t *demo = &DEMOS[result.index];
-        ui_pixel_mascot_jump(s_mascot);
-        lv_obj_delete(s_menu_scr);
-        s_menu_scr = NULL;
-        s_mascot = NULL;
-        demo->enter();
-        bsp_lvgl_unlock();
-
-        esp_err_t e = demo->start ? demo->start() : ESP_OK;
-        if (e != ESP_OK) {
-            ESP_LOGE(TAG, "%s 页面启动失败: %s", demo->name, esp_err_to_name(e));
-        }
-        return;
-    }
+    refresh_ui();
     bsp_lvgl_unlock();
 }
 
-static void input_task(void *arg) {
-    (void)arg;
-    input_event_t input;
+static void on_button(bsp_btn_t button, bsp_btn_ev_t event, void *user)
+{
+    (void)user;
+    input_t input = {.button = button, .event = event};
+    if (s_inputs) (void)xQueueSend(s_inputs, &input, 0);
+}
+
+static void input_task(void *user)
+{
+    (void)user;
+    input_t input;
     for (;;) {
-        if (xQueueReceive(s_input_queue, &input, portMAX_DELAY) == pdTRUE) {
-            process_input(&input);
+        if (xQueueReceive(s_inputs, &input, pdMS_TO_TICKS(60000)) == pdTRUE) {
+            if (input.event != BSP_BTN_CLICK) continue;
+            if (input.button == BSP_BTN_OK) {
+                monitor_net_refresh();
+            } else if (bsp_lvgl_lock(500)) {
+                s_show_details = input.button == BSP_BTN_DOWN;
+                show_page();
+                bsp_lvgl_unlock();
+            }
+        } else if (s_battery >= 0) {
+            int battery = bsp_battery_soc();
+            if (battery >= 0 && bsp_lvgl_lock(500)) {
+                s_battery = battery;
+                refresh_ui();
+                bsp_lvgl_unlock();
+            }
         }
     }
 }
 
-static esp_err_t input_dispatch_init(void) {
-    s_input_queue = xQueueCreate(INPUT_QUEUE_DEPTH, sizeof(input_event_t));
-    if (!s_input_queue) return ESP_ERR_NO_MEM;
-    if (xTaskCreate(input_task, "demo_input", 4096, NULL, 5, &s_input_task) != pdPASS) {
-        vQueueDelete(s_input_queue);
-        s_input_queue = NULL;
-        return ESP_ERR_NO_MEM;
-    }
-    return ESP_OK;
-}
-
-static void input_dispatch_deinit(void) {
-    s_input_ready = false;
-    if (s_input_task) {
-        vTaskDelete(s_input_task);
-        s_input_task = NULL;
-    }
-    if (s_input_queue) {
-        vQueueDelete(s_input_queue);
-        s_input_queue = NULL;
-    }
-}
-
-// button callbacks run on the shared esp_timer task; enqueue only and return immediately.
-static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
-    (void)user;
-    if (!s_input_ready || !s_input_queue) return;
-    const input_event_t input = { .btn = btn, .event = ev };
-    (void)xQueueSend(s_input_queue, &input, 0);
-}
-
-void app_main(void) {
-    ESP_LOGI(TAG, "FoloToy AI Passport BSP demo 启动");
-    esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
-    if (wakeup != ESP_SLEEP_WAKEUP_UNDEFINED) {
-        ESP_LOGI(TAG, "休眠唤醒原因: %d", wakeup);
-    }
-
-    bsp_i2c_init();
-    bsp_i2c_scan();
-
-    // 屏幕是本 demo 的 UI 载体,失败就没有菜单可言 —— 打清楚日志后退出,
-    // 不做"串口菜单"降级(那会让本文件复杂一倍,违背参考示例的初衷)。
-    if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) {
-        ESP_LOGE(TAG, "显示/LVGL 初始化失败,demo 无法继续。"
-                      "检查 SPI 接线(MOSI=%d SCLK=%d CS=%d DC=%d BL=%d)",
-                 BSP_LCD_MOSI, BSP_LCD_SCLK, BSP_LCD_CS, BSP_LCD_DC, BSP_LCD_BL);
+void app_main(void)
+{
+    if (bsp_i2c_init() != ESP_OK || bsp_display_init() != ESP_OK || !bsp_lvgl_init()) {
+        ESP_LOGE(TAG, "Display initialization failed");
         return;
     }
+    if (bsp_battery_init() == ESP_OK) s_battery = bsp_battery_soc();
+    if (!bsp_lvgl_lock(1000)) return;
+    build_ui();
+    bsp_lvgl_unlock();
     bsp_display_backlight(100);
 
-    demo_navigation_init(&s_navigation, DEMO_COUNT);
-
-    // 其余外设单项失败不阻塞:菜单里标 [FAIL],其他项照常可测。
-    s_ok[0] = true;                                   // Display 已确认可用
-    esp_err_t input_err = input_dispatch_init();
-    esp_err_t button_err = input_err == ESP_OK
-                         ? bsp_button_init(on_key, NULL)
-                         : ESP_ERR_INVALID_STATE;
-    s_ok[1] = input_err == ESP_OK && button_err == ESP_OK;
-    if (input_err != ESP_OK) {
-        ESP_LOGE(TAG, "按键事件任务创建失败: %s", esp_err_to_name(input_err));
-    } else if (button_err != ESP_OK) {
-        ESP_LOGE(TAG, "按键初始化失败: %s", esp_err_to_name(button_err));
-        input_dispatch_deinit();
+    s_inputs = xQueueCreate(8, sizeof(input_t));
+    if (s_inputs && xTaskCreate(input_task, "monitor_input", 4096, NULL, 5, NULL) == pdPASS) {
+        esp_err_t error = bsp_button_init(on_button, NULL);
+        if (error != ESP_OK) ESP_LOGE(TAG, "Button initialization failed: %s", esp_err_to_name(error));
     }
-    s_ok[2] = (bsp_audio_init() == ESP_OK);
-    s_ok[3] = (bsp_battery_init() == ESP_OK);
-    s_ok[4] = true;                                    // 页面内按需初始化并显示错误
-    s_ok[5] = true;
-    s_ok[6] = true;
-
-    if (bsp_lvgl_lock(1000)) {
-        enter_menu();
-        bsp_lvgl_unlock();
-        s_input_ready = true;
+    esp_err_t error = monitor_net_start(on_monitor_update);
+    if (error != ESP_OK) {
+        ESP_LOGE(TAG, "Network initialization failed: %s", esp_err_to_name(error));
+        on_monitor_update(MONITOR_ERROR, NULL);
     }
-
-    ESP_LOGI(TAG, "就绪:Display=%d Button=%d Audio=%d Battery=%d",
-             s_ok[0], s_ok[1], s_ok[2], s_ok[3]);
 }

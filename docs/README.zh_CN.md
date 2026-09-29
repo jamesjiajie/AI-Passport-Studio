@@ -33,6 +33,8 @@
 **FoloToy AI Passport** 是开放的可穿戴 AI 平台，人人都可以动手改造、自由创作。
 从一个简单想法开始，打造专属体验——无论是随身伙伴、小工具、游戏，还是任何新点子。
 
+本分支包含 [Codex 用量监控应用](codex-monitor.zh_CN.md)。
+
 <p align="center">
   <img src="../assets/images/home.jpg" alt="FoloToy AI Passport 可穿戴设备的正面、侧面和背面展示。" width="100%">
 </p>
@@ -51,9 +53,8 @@
 | 了解硬件、参与贡献 | [硬件指南](hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.zh_CN.md) · [贡献指南](../.github/CONTRIBUTING.zh_CN.md) |
 
 > [!IMPORTANT]
-> `main` 是最小可运行的**硬件测试基线**，不是成品应用。
-> 二次开发必须重新设计 UI，禁止沿用当前 demo 测试菜单和页面；
-> BSP API 与非 UI 逻辑仍可复用。
+> 上游 `main` 是最小可运行的**硬件测试基线**。本分支已重新设计为
+> Codex 用量监控界面，并复用其 BSP。
 
 ## 用一句需求开始开发
 

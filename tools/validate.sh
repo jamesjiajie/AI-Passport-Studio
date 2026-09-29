@@ -11,6 +11,8 @@ usage() {
 run_static_checks() {
     local actionlint_bin
     local test_dir
+    local gc_sections_flag="-Wl,--gc-sections"
+    [[ "$(uname -s)" == Darwin ]] && gc_sections_flag="-Wl,-dead_strip"
 
     python3 tools/check_repo.py
 
@@ -57,7 +59,7 @@ run_static_checks() {
     for demo in audio low_power ble wifi; do
         "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
             -ffunction-sections -fdata-sections -Itests/demo_stubs -Imain \
-            "tests/test_demo_${demo}_runtime.c" -Wl,--gc-sections \
+            "tests/test_demo_${demo}_runtime.c" "${gc_sections_flag}" \
             -o "${test_dir}/test_demo_${demo}_runtime"
         "${test_dir}/test_demo_${demo}_runtime"
     done
@@ -66,6 +68,8 @@ run_static_checks() {
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_verify_firmware.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_archive_firmware.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_install_passport_skills.py
+    PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 python3 tests/test_codex_usage_bridge.py
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_monitor_font.py
     rm -rf "${test_dir}"
     echo "Host tests: PASS"
 }
@@ -77,6 +81,14 @@ run_firmware_checks() (
         echo "ERROR: idf.py is not available; activate ESP-IDF 5.5.3 first." >&2
         return 1
     fi
+
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        -I"${IDF_PATH}/components/json/cJSON" \
+        tests/test_monitor_data.c main/monitor_data.c \
+        "${IDF_PATH}/components/json/cJSON/cJSON.c" -lm \
+        -o /tmp/ai-passport-monitor-data-$$
+    /tmp/ai-passport-monitor-data-$$
+    rm -f /tmp/ai-passport-monitor-data-$$
 
     validation_build_dir="$(mktemp -d /tmp/ai-passport-firmware.XXXXXX)"
     trap 'case "${validation_build_dir}" in /tmp/ai-passport-firmware.*) rm -rf -- "${validation_build_dir}" ;; esac' EXIT

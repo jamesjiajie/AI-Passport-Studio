@@ -34,6 +34,8 @@
 remix, and create. Start with a simple idea, build your own experience, and make
 it anything—from a pocket companion to something no one has imagined yet.
 
+This branch contains the [Codex quota monitor application](codex-monitor.md).
+
 <p align="center">
   <img src="../assets/images/home.jpg" alt="FoloToy AI Passport wearable device shown from the front, side, and back." width="100%">
 </p>
@@ -52,9 +54,8 @@ it anything—from a pocket companion to something no one has imagined yet.
 | Explore the board or contribute | [Hardware guide](hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.md) · [Contributing](../.github/CONTRIBUTING.md) |
 
 > [!IMPORTANT]
-> `main` is a minimal, runnable **hardware-test baseline**, not a finished application.
-> Derivative applications must design their own UI; the current demo test menu and
-> screens must not be reused. BSP APIs and non-UI logic remain reusable.
+> The upstream `main` is a minimal **hardware-test baseline**. This branch
+> replaces its demo screen with the Codex quota monitor and reuses its BSP.
 
 ## Start development with one requirement
 
