@@ -2,6 +2,7 @@ build/
 sdkconfig
 sdkconfig.old
 managed_components/
+/config/wifi.local.json
 __pycache__/
 .vscode/
 .idea/

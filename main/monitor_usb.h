@@ -4,7 +4,6 @@
 #include "monitor_data.h"
 
 typedef enum {
-    MONITOR_NEEDS_SETUP,
     MONITOR_CONNECTING,
     MONITOR_FETCHING,
     MONITOR_LIVE,
@@ -14,5 +13,5 @@ typedef enum {
 
 typedef void (*monitor_update_cb_t)(monitor_status_t status, const monitor_snapshot_t *snapshot);
 
-esp_err_t monitor_net_start(monitor_update_cb_t callback);
-void monitor_net_refresh(void);
+esp_err_t monitor_usb_start(monitor_update_cb_t callback);
+void monitor_usb_refresh(void);

@@ -140,7 +140,6 @@ void vSemaphoreDelete(SemaphoreHandle_t sem) {
 }
 
 esp_err_t demo_radio_nvs_prepare(void) { return ESP_OK; }
-esp_err_t demo_radio_network_prepare(void) { return ESP_OK; }
 esp_err_t nimble_port_init(void) { return ESP_OK; }
 esp_err_t nimble_port_deinit(void) {
     test_nimble_deinits++;

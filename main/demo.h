@@ -27,10 +27,6 @@ esp_err_t demo_audio_start(void); esp_err_t demo_audio_stop(void);
 void demo_battery_enter(void); void demo_battery_exit(void);
 void demo_battery_key(bsp_btn_t btn, bsp_btn_ev_t ev);
 
-void demo_wifi_enter(void);    void demo_wifi_exit(void);
-void demo_wifi_key(bsp_btn_t btn, bsp_btn_ev_t ev);
-esp_err_t demo_wifi_start(void); esp_err_t demo_wifi_stop(void);
-
 void demo_ble_enter(void);     void demo_ble_exit(void);
 void demo_ble_key(bsp_btn_t btn, bsp_btn_ev_t ev);
 esp_err_t demo_ble_start(void); esp_err_t demo_ble_stop(void);

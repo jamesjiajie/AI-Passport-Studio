@@ -139,7 +139,7 @@ No build/archive command flashes a device.
 
 The static gate also compiles the actual BSP and demo implementations against
 small platform stubs. These fault-injection tests cover task handoff and stop
-retries, recording failures, Wi-Fi/BLE startup rollback, button allocation and
+retries, recording failures, BLE startup rollback, button allocation and
 ADC failures, LVGL initialization locking/retry, and codec open/sleep/wake
 recovery. They need only a host C compiler and Python, not ESP-IDF or downloaded
 Managed Components. They do not establish real timing, electrical behavior or

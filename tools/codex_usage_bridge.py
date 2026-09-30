@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
-"""Serve Codex account quota windows to one AI Passport on a trusted LAN."""
+"""Send Codex account quota windows to AI Passport over USB."""
 
 from __future__ import annotations
 
 import argparse
-import hmac
+import glob
 import json
 import os
-import secrets
 import select
 import shutil
 import subprocess
 import time
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
-TOKEN_FILE = ROOT / "build" / "monitor-token"
+def find_codex():
+    cli = shutil.which("codex")
+    if cli:
+        return cli
+    bundled = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+    return bundled if os.path.isfile(bundled) and os.access(bundled, os.X_OK) else None
 
 
 def normalize_limits(result: dict, now: int) -> dict:
@@ -98,62 +99,109 @@ def read_limits(codex: str, timeout: float = 20) -> dict:
             process.wait()
 
 
-def load_token(path: Path) -> str:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.is_symlink():
-        raise ValueError("bridge token file must not be a symlink")
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        pass
-    else:
-        with os.fdopen(fd, "w") as stream:
-            stream.write(secrets.token_urlsafe(24) + "\n")
-    token = path.read_text(encoding="ascii").strip()
-    if len(token) < 24 or path.stat().st_mode & 0o077:
-        raise ValueError("bridge token file is invalid")
-    return token
+def send_usb(fd: int, snapshot: dict) -> None:
+    data = (json.dumps(snapshot, separators=(",", ":")) + "\n").encode()
+    if len(data) > 513:
+        raise ValueError("quota snapshot exceeds USB frame limit")
+    deadline = time.monotonic() + 3
+    while data:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([], [fd], [], remaining)[1]:
+            raise TimeoutError("USB write timed out")
+        count = os.write(fd, data)
+        if count <= 0:
+            raise OSError("USB write failed")
+        data = data[count:]
 
 
-def make_handler(token: str, codex: str):
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:
-            if self.path != "/usage":
-                self.send_error(404)
-                return
-            if not hmac.compare_digest(self.headers.get("X-Passport-Token", ""), token):
-                self.send_error(403)
-                return
+def usb_session(fd: int, codex: str) -> None:
+    next_update = 0.0
+    ack_deadline = 0.0
+    pending = bytearray()
+    while True:
+        if time.monotonic() >= next_update:
             try:
-                body = json.dumps(read_limits(codex), separators=(",", ":")).encode()
-                status = 200
+                snapshot = read_limits(codex)
             except (OSError, ValueError, RuntimeError, TimeoutError):
-                body = b'{"error":"unavailable"}'
-                status = 503
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+                send_usb(fd, {"error": "unavailable"})
+                print("Codex quota unavailable; retrying in 15 seconds.", flush=True)
+                next_update = time.monotonic() + 15
+                ack_deadline = 0
+            else:
+                send_usb(fd, snapshot)
+                ack_deadline = time.monotonic() + 5
+                next_update = time.monotonic() + 60
+        if ack_deadline and time.monotonic() > ack_deadline:
+            raise RuntimeError("Device did not acknowledge quota; install the USB firmware")
+        if not select.select([fd], [], [], 0.25)[0]:
+            continue
+        data = os.read(fd, 4096)
+        if not data:
+            raise OSError("USB device disconnected")
+        pending.extend(data)
+        while b"\n" in pending:
+            line, _, rest = pending.partition(b"\n")
+            pending = bytearray(rest)
+            line = line.strip()
+            if line == b"MONITOR_USB_OK":
+                ack_deadline = 0
+                print("USB quota delivered.", flush=True)
+            elif line == b"MONITOR_USB_REFRESH":
+                next_update = 0
+            elif line == b"MONITOR_USB_ERROR" and ack_deadline:
+                raise RuntimeError("Device rejected the quota snapshot")
+        if len(pending) > 4096:
+            pending.clear()
 
-    return Handler
+
+def stream_usb(port: str, codex: str) -> None:
+    import termios
+    import tty
+    waiting = False
+    while True:
+        try:
+            path = port
+            if port == "auto":
+                ports = sorted(glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/ttyACM*"))
+                if not ports:
+                    raise FileNotFoundError("no USB device")
+                if len(ports) != 1:
+                    raise ValueError("multiple USB devices; choose one with --serial <port>")
+                path = ports[0]
+            fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+            try:
+                tty.setraw(fd)
+                settings = termios.tcgetattr(fd)
+                settings[4] = settings[5] = termios.B115200
+                settings[2] |= termios.CLOCAL | termios.CREAD
+                termios.tcsetattr(fd, termios.TCSANOW, settings)
+                # Synchronize newline framing after an interrupted transfer.
+                os.write(fd, b"\n")
+                print(f"USB connected: {path}; updates every 60 seconds.", flush=True)
+                waiting = False
+                usb_session(fd, codex)
+            finally:
+                os.close(fd)
+        except OSError:
+            if not waiting:
+                print("Waiting for USB device; reconnect the data cable.", flush=True)
+                waiting = True
+            time.sleep(2)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bind", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument("--serial", default="auto", help="USB port; auto-detect by default")
     args = parser.parse_args()
-    codex = shutil.which("codex")
+    codex = find_codex()
     if not codex:
         parser.error("codex CLI is unavailable")
-    token = load_token(TOKEN_FILE)
-    print(f"Serving /usage on {args.bind}:{args.port}; token file: {TOKEN_FILE}", flush=True)
     try:
-        HTTPServer((args.bind, args.port), make_handler(token, codex)).serve_forever()
+        stream_usb(args.serial, codex)
     except KeyboardInterrupt:
         pass
+    except (ImportError, ValueError, RuntimeError, TimeoutError) as error:
+        parser.error(str(error))
 
 
 if __name__ == "__main__":

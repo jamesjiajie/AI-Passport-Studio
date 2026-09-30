@@ -104,38 +104,6 @@ void lv_screen_load(lv_obj_t *screen);
 lv_timer_t *lv_timer_create(void (*callback)(lv_timer_t *), unsigned period, void *data);
 void lv_timer_delete(lv_timer_t *timer);
 
-typedef struct { int unused; } esp_netif_t;
-typedef struct { int unused; } esp_netif_config_t;
-#define ESP_NETIF_DEFAULT_WIFI_STA() { 0 }
-typedef const char *esp_event_base_t;
-typedef void *esp_event_handler_instance_t;
-#define WIFI_EVENT "wifi"
-#define WIFI_EVENT_SCAN_DONE 1
-#define WIFI_STORAGE_RAM 0
-#define WIFI_MODE_STA 0
-typedef struct { int unused; } wifi_init_config_t;
-#define WIFI_INIT_CONFIG_DEFAULT() { 0 }
-typedef struct { int rssi; uint8_t ssid[33]; uint8_t primary; } wifi_ap_record_t;
-esp_netif_t *esp_netif_new(const esp_netif_config_t *cfg);
-esp_err_t esp_netif_attach_wifi_station(esp_netif_t *netif);
-esp_err_t esp_wifi_set_default_wifi_sta_handlers(void);
-void esp_netif_destroy_default_wifi(void *netif);
-esp_err_t esp_wifi_init(const wifi_init_config_t *cfg);
-esp_err_t esp_wifi_deinit(void);
-esp_err_t esp_wifi_set_storage(int storage);
-esp_err_t esp_wifi_set_mode(int mode);
-esp_err_t esp_wifi_start(void);
-esp_err_t esp_wifi_stop(void);
-esp_err_t esp_wifi_scan_start(const void *cfg, bool blocking);
-esp_err_t esp_wifi_scan_stop(void);
-esp_err_t esp_wifi_scan_get_ap_num(uint16_t *count);
-esp_err_t esp_wifi_scan_get_ap_records(uint16_t *count, wifi_ap_record_t *records);
-esp_err_t esp_event_handler_instance_register(esp_event_base_t base, int32_t id,
-    void (*callback)(void *, esp_event_base_t, int32_t, void *), void *arg,
-    esp_event_handler_instance_t *instance);
-esp_err_t esp_event_handler_instance_unregister(esp_event_base_t base, int32_t id,
-    esp_event_handler_instance_t instance);
-
 struct ble_gap_event { int type; };
 struct ble_hs_adv_fields { int flags; const uint8_t *name; size_t name_len; int name_is_complete; };
 struct ble_gap_adv_params { int conn_mode; int disc_mode; };

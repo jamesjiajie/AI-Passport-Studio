@@ -34,7 +34,6 @@ The target is the ESP32-C3 FoloToy AI Passport with ESP-IDF 5.5.3. It has 8 MB F
 | Buttons | UP/DOWN/OK resistor ladder | GPIO0 / ADC1_CH0 | Events and live-voltage page |
 | Audio | ES8311 playback and microphone | shared I2C + I2S0 full duplex | Playback and recording page |
 | Battery | CW2017 fuel gauge | shared I2C0, address `0x63` | Optional SOC and voltage driver |
-| Wi-Fi | 2.4 GHz station | initialized by the demo | Scan page |
 | Bluetooth LE | NimBLE peripheral | initialized by the demo | Non-connectable advertising page |
 | Low power | light/deep sleep | RTC timer wake | 2 s light and 5 s deep-sleep modes |
 | Console | USB Serial/JTAG | native USB GPIO18/19 | Configured |
@@ -73,8 +72,8 @@ LCD reset and amplifier enable are `-1`: display reset uses software reset, and 
 | I2S0 | audio BSP | TX and RX are full duplex and share MCLK/BCLK/WS. |
 | USB Serial/JTAG | console configuration | GPIO18/19 are part of the selected console path. |
 | Internal RAM/DMA | display, LVGL, audio, radio, tasks | No PSRAM exists; total free heap and largest contiguous block both matter. |
-| NVS/network event loop | `demo_radio.c` | Prepared once for Wi-Fi/BLE demos; do not erase unrelated NVS data on initialization errors. |
-| Wi-Fi/BLE stacks | individual demo pages | Current demos start on page entry and deinitialize on exit; the stacks do not remain active together. |
+| NVS | `demo_radio.c` | Prepared once for the BLE demo; do not erase unrelated NVS data on initialization errors. |
+| Bluetooth LE stack | BLE demo page | Starts on page entry and deinitializes on exit. |
 
 GPIO0 is both the button ADC node and an ESP32-C3 boot-related pin. GPIO21 is the backlight output and conflicts with the commonly used UART0 TX mapping. Pin reassignment requires boot/programming-path review and on-device acceptance.
 
@@ -101,13 +100,12 @@ Display/LVGL is a hard dependency. Buttons, audio, and battery are soft dependen
 
 Button callbacks run in the shared `esp_timer` task. They only enqueue input and return; the demo lifecycle task handles navigation and starts or stops slow services without holding the LVGL lock. Page exit first completes a bounded producer stop, then deletes timers and UI objects while holding the lock. Audio and light-sleep workers use cooperative cancellation and an explicit exit handshake rather than forced task deletion. The low-power worker force-suspends and verifies ES8311 before either sleep mode and resumes it after light sleep. For deep sleep it suspends and verifies CW2017 first, force-suspends ES8311, stops and releases I2S, releases the shared I2C pins, blocks further LVGL flushes, sleeps the LCD, and holds its safe pin levels before entering deep sleep. Individual peripheral failures are logged but do not strand the system awake; an unexpected return after terminal pin release causes a restart. Deep-sleep wake also restarts the application and follows normal BSP initialization.
 
-Wi-Fi, NimBLE, and sleep use ESP-IDF directly rather than the BSP. `demo_radio.c` owns shared NVS, `esp_netif`, and default-event-loop setup. Wi-Fi and Bluetooth pages allocate their radio stacks after page creation and stop/deinitialize them before page deletion. Do not erase NVS to hide partition errors. Deep sleep restarts the application and the demo uses RTC slow memory for the wake counter.
+NimBLE and sleep use ESP-IDF directly rather than the BSP. `demo_radio.c` prepares NVS for the BLE demo. The Bluetooth page allocates its radio stack after page creation and stops/deinitializes it before page deletion. Do not erase NVS to hide partition errors. Deep sleep restarts the application and the demo uses RTC slow memory for the wake counter.
 
 Audio, low-power, and BLE workers acknowledge completion only after their final
 shared-state access, then park until the lifecycle owner deletes them. A timed-out
 stop retains the task handle and completion semaphore for retry; do not let an
-old worker clear a replacement task's handle. Wi-Fi uses checked netif creation,
-attachment and handler registration; BLE checks host task creation and cleans up
+old worker clear a replacement task's handle. BLE checks host task creation and cleans up
 without calling host-stop when no task was created. Allocation failure must not
 be hidden behind an SDK helper that asserts or ignores task-creation results.
 
@@ -277,7 +275,6 @@ the demo test UI just to follow these examples.
 | ADC/buttons | released and pressed mV, click/double/long events, margin across battery levels |
 | Codec/I2S | 1 kHz tone, non-zero recording, correct playback speed, format changes, page exit |
 | Battery | plausible SOC/mV, graceful missing-device behavior, intermittent-I2C recovery |
-| Wi-Fi | visible scan count/SSID/RSSI, rescan, repeated entry/exit |
 | Bluetooth LE | phone sees `FoloPassport`, restart advertising, advertising stops on exit, repeated entry/exit |
 | Light/deep sleep | select with UP/DOWN; confirm the ES8311 readback passes before both modes; 2 s light sleep resumes codec/audio and backlight; for 5 s deep sleep confirm CW2017 precedes ES8311, I2S/I2C go high impedance, LCD safe levels remain held, timer wake retains the count, and audio/display work after reinitialization; measure board current in each state |
 | DMA/memory/UI | build memory report, runtime minimum heap/largest block, stable concurrent audio/display |
@@ -298,7 +295,7 @@ the demo test UI just to follow these examples.
 | Recording is zero | `no_dac_ref`, DIN GPIO4, microphone path, gain |
 | Recording allocation fails | no PSRAM; shorten/stream and inspect largest block |
 | Battery shows `--` | `0x63` response, invalid SOC, profile/startup delay |
-| Wi-Fi/BLE fails on second entry | stack stop/deinit and one-time NVS/event-loop setup |
+| Bluetooth LE fails on second entry | stack stop/deinit and one-time NVS setup |
 | Black after light sleep | timer wake source, sleep error, backlight restore |
 | Deep sleep does not restart | timer source, boot wake cause, RTC counter |
 | I2S allocation fails after UI growth | competition among LCD/LVGL buffers and I2S DMA |

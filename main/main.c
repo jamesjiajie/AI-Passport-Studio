@@ -5,7 +5,7 @@
 #include "bsp_display.h"
 #include "bsp_i2c.h"
 #include "lvgl.h"
-#include "monitor_net.h"
+#include "monitor_usb.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -40,7 +40,7 @@ static lv_obj_t *s_five_bar;
 static lv_obj_t *s_week_bar;
 static lv_obj_t *s_detail_status;
 static lv_obj_t *s_detail_update;
-static monitor_status_t s_status = MONITOR_NEEDS_SETUP;
+static monitor_status_t s_status = MONITOR_CONNECTING;
 static monitor_snapshot_t s_snapshot;
 static bool s_has_snapshot;
 static bool s_show_details;
@@ -86,7 +86,6 @@ static lv_obj_t *quota_bar(lv_obj_t *parent)
 static const char *status_text(monitor_status_t status)
 {
     switch (status) {
-    case MONITOR_NEEDS_SETUP: return "未配置";
     case MONITOR_CONNECTING: return "连接中";
     case MONITOR_FETCHING: return "更新中";
     case MONITOR_LIVE: return "在线";
@@ -107,15 +106,15 @@ static void refresh_ui(void)
         const monitor_window_t *five = &s_snapshot.five_hour;
         const monitor_window_t *week = &s_snapshot.weekly;
         lv_label_set_text_fmt(s_five_percent, five->available ? "%d%%" : "--",
-                              five->used_percent);
+                              five->remaining_percent);
         lv_label_set_text_fmt(s_week_percent, week->available ? "%d%%" : "--",
-                              week->used_percent);
+                              week->remaining_percent);
         lv_label_set_text_fmt(s_five_reset, "重置 %s",
                               five->available ? five->reset_local : "--");
         lv_label_set_text_fmt(s_week_reset, "重置 %s",
                               week->available ? week->reset_local : "--");
-        lv_bar_set_value(s_five_bar, five->available ? five->used_percent : 0, LV_ANIM_OFF);
-        lv_bar_set_value(s_week_bar, week->available ? week->used_percent : 0, LV_ANIM_OFF);
+        lv_bar_set_value(s_five_bar, five->available ? five->remaining_percent : 0, LV_ANIM_OFF);
+        lv_bar_set_value(s_week_bar, week->available ? week->remaining_percent : 0, LV_ANIM_OFF);
         lv_label_set_text_fmt(s_updated_label, "更新 %s", s_snapshot.updated_local);
         lv_label_set_text_fmt(s_detail_update, "更新 %s", s_snapshot.updated_local);
     } else {
@@ -146,9 +145,9 @@ static void build_ui(void)
     lv_obj_set_style_border_width(s_screen, 0, 0);
     lv_obj_remove_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);
     label(s_screen, "CODEX", 15, 12, &lv_font_montserrat_20, INK);
-    label(s_screen, "用量监控", 16, 41, &monitor_font_16, MUTED);
+    label(s_screen, "剩余额度", 16, 41, &monitor_font_16, MUTED);
     s_battery_label = label(s_screen, "BAT --", 161, 17, &lv_font_montserrat_14, MUTED);
-    s_status_label = label(s_screen, "未配置", 164, 43,
+    s_status_label = label(s_screen, "连接中", 164, 43,
                            &monitor_font_16, MUTED);
 
     s_overview = lv_obj_create(s_screen);
@@ -160,14 +159,14 @@ static void build_ui(void)
     lv_obj_remove_flag(s_overview, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *five = panel(s_overview, 0);
-    label(five, "五小时", 13, 9, &monitor_font_16, MUTED);
+    label(five, "五小时剩余", 13, 9, &monitor_font_16, MUTED);
     s_five_percent = label(five, "--", 130, 5, &lv_font_montserrat_20, INK);
     s_five_bar = quota_bar(five);
     s_five_reset = label(five, "重置 --", 13, 71,
                          &monitor_font_16, MUTED);
 
     lv_obj_t *week = panel(s_overview, 98);
-    label(week, "每周", 13, 9, &monitor_font_16, MUTED);
+    label(week, "每周剩余", 13, 9, &monitor_font_16, MUTED);
     s_week_percent = label(week, "--", 130, 5, &lv_font_montserrat_20, INK);
     s_week_bar = quota_bar(week);
     s_week_reset = label(week, "重置 --", 13, 71,
@@ -187,13 +186,13 @@ static void build_ui(void)
     lv_obj_t *info = panel(s_details, 0);
     lv_obj_set_height(info, 174);
     label(info, "连接状态", 14, 14, &monitor_font_16, MUTED);
-    s_detail_status = label(info, "未配置", 14, 42,
+    s_detail_status = label(info, "连接中", 14, 42,
                             &monitor_font_16, TEAL);
     s_detail_update = label(info, "更新 --", 14, 76,
                             &monitor_font_16, INK);
-    label(info, "电脑与设备同一网络", 14, 107,
+    label(info, "电脑与设备 USB 连接", 14, 107,
           &monitor_font_16, MUTED);
-    label(info, "首次请用 USB 配置", 14, 137,
+    label(info, "电脑读取用量 USB 更新", 14, 137,
           &monitor_font_16, MUTED);
     label(s_details, "上/下切换  确定刷新", 16, 196,
           &monitor_font_16, MUTED);
@@ -229,7 +228,7 @@ static void input_task(void *user)
         if (xQueueReceive(s_inputs, &input, pdMS_TO_TICKS(60000)) == pdTRUE) {
             if (input.event != BSP_BTN_CLICK) continue;
             if (input.button == BSP_BTN_OK) {
-                monitor_net_refresh();
+                monitor_usb_refresh();
             } else if (bsp_lvgl_lock(500)) {
                 s_show_details = input.button == BSP_BTN_DOWN;
                 show_page();
@@ -263,9 +262,9 @@ void app_main(void)
         esp_err_t error = bsp_button_init(on_button, NULL);
         if (error != ESP_OK) ESP_LOGE(TAG, "Button initialization failed: %s", esp_err_to_name(error));
     }
-    esp_err_t error = monitor_net_start(on_monitor_update);
+    esp_err_t error = monitor_usb_start(on_monitor_update);
     if (error != ESP_OK) {
-        ESP_LOGE(TAG, "Network initialization failed: %s", esp_err_to_name(error));
+        ESP_LOGE(TAG, "USB initialization failed: %s", esp_err_to_name(error));
         on_monitor_update(MONITOR_ERROR, NULL);
     }
 }

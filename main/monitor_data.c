@@ -3,6 +3,27 @@
 #include <string.h>
 #include "cJSON.h"
 
+int monitor_receive_byte(monitor_receiver_t *receiver, unsigned char byte)
+{
+    if (byte == '\r') return 0;
+    if (byte == '\n') {
+        receiver->text[receiver->length] = '\0';
+        receiver->frame_length = receiver->length;
+        int result = receiver->discard ? -1 : receiver->length ? 1 : 0;
+        receiver->length = 0;
+        receiver->discard = false;
+        return result;
+    }
+    if (byte < 0x20 || receiver->length == 512) receiver->discard = true;
+    if (!receiver->discard) receiver->text[receiver->length++] = (char)byte;
+    return 0;
+}
+
+bool monitor_data_stale(bool has_snapshot, uint64_t now_ms, uint64_t last_update_ms)
+{
+    return has_snapshot && now_ms >= last_update_ms && now_ms - last_update_ms >= 120000;
+}
+
 static bool local_time_label(const cJSON *value, char out[12])
 {
     if (!cJSON_IsString(value) || !value->valuestring) {
@@ -32,7 +53,7 @@ static bool parse_window(const cJSON *root, const char *key, monitor_window_t *o
     if (!cJSON_IsNumber(used) || used->valuedouble != used->valueint ||
         used->valueint < 0 || used->valueint > 100 ||
         !local_time_label(reset, out->reset_local)) return false;
-    out->used_percent = used->valueint;
+    out->remaining_percent = 100 - used->valueint;
     out->available = true;
     return true;
 }

@@ -96,7 +96,7 @@ static void sleep_task(void *arg)
                 log_deep_sleep_warning("shared I2C pin release",
                                        bsp_i2c_prepare_deep_sleep());
 
-                // Wi-Fi/BLE 只由各自 demo 页持有；进入本页前已经停止并释放。
+                // BLE 只由其 demo 页持有；进入本页前已经停止并释放。
                 // 加锁等待当前 flush 完成，然后阻止 LVGL 在 LCD 关闭后再刷屏。
                 if (!bsp_lvgl_lock(1000)) {
                     ESP_LOGE(TAG, "deep sleep 前无法停止 LVGL 刷屏，重启恢复外设");
